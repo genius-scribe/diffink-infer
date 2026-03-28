@@ -1,31 +1,33 @@
 # DiffInk RunPod Serverless Worker
 #
+# Base image is pre-cached on all RunPod worker nodes — only the diff
+# (pip deps + source) is pulled, keeping cold-start image pulls to ~200 MB.
+#
 # Build:
 #   docker build --platform linux/amd64 -t your-user/diffink-infer:latest .
 # Push:
 #   docker push your-user/diffink-infer:latest
 
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /app
 
-# ── System dependencies ────────────────────────────────────────────────────
+# ── Extra system libs for opencv ───────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip \
         libgl1 libglib2.0-0 \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3 /usr/bin/python
+    && rm -rf /var/lib/apt/lists/*
 
-# ── uv ────────────────────────────────────────────────────────────────────
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-ENV UV_SYSTEM_PYTHON=1 \
-    UV_NO_CACHE=1
-
-# ── Python dependencies ────────────────────────────────────────────────────
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project
-ENV PATH="/app/.venv/bin:$PATH"
+# ── Python dependencies (torch already provided by base image) ─────────────
+RUN pip install --no-cache-dir \
+    runpod \
+    "numpy>=1.24" \
+    einops \
+    einx \
+    "x-transformers>=1.42" \
+    pyyaml \
+    tqdm \
+    "opencv-python-headless>=4.11" \
+    "gdown>=5.0"
 
 # ── Application source ─────────────────────────────────────────────────────
 COPY diffink/ ./diffink/
