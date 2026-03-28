@@ -25,6 +25,7 @@ ENV UV_SYSTEM_PYTHON=1 \
 # ── Python dependencies ────────────────────────────────────────────────────
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
+ENV PATH="/app/.venv/bin:$PATH"
 
 # ── Application source ─────────────────────────────────────────────────────
 COPY diffink/ ./diffink/
