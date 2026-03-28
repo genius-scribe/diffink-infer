@@ -1,0 +1,17 @@
+# Keep the Docker build context small
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Large local assets — downloaded fresh during docker build
+checkpoints/
+data/
+outputs/
+
+# Dev-only files
+DiffInk/
+*.egg-info/
+dist/
+.pytest_cache/
