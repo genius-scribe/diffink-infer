@@ -5,20 +5,23 @@ description = "DiffInk inference — Glyph- and Style-Aware Latent Diffusion Tra
 requires-python = ">=3.10"
 dependencies = [
     "torch==2.4.1+cu124",
-    "torchvision==0.19.1+cu124",
-    "torchaudio==2.4.1+cu124",
     "numpy>=1.24",
-    "h5py>=3.11",
     "einops>=0.8",
     "einx>=0.3",
     "x-transformers>=1.42",
     "pyyaml>=6.0",
     "tqdm>=4.67",
-    "opencv-python>=4.11",
-    "matplotlib>=3.7",
-    "scipy>=1.10",
+    "opencv-python-headless>=4.11",
     "gdown>=5.0",
     "runpod>=1.8.2",
+]
+
+[project.optional-dependencies]
+local = [
+    "opencv-python>=4.11",
+    "h5py>=3.11",
+    "matplotlib>=3.7",
+    "scipy>=1.10",
 ]
 
 [project.scripts]
@@ -38,5 +41,3 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
-torchvision = { index = "pytorch-cu124" }
-torchaudio = { index = "pytorch-cu124" }

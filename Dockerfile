@@ -11,29 +11,20 @@ WORKDIR /app
 
 # ── System dependencies ────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-dev \
+        python3 python3-pip \
         libgl1 libglib2.0-0 \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/bin/python
 
-# ── PyTorch 2.4.1 + CUDA 12.4 ─────────────────────────────────────────────
-# Last release with SM_70 (V100) support. torchvision not needed for inference.
-RUN pip install --no-cache-dir \
-    torch==2.4.1+cu124 \
-    --index-url https://download.pytorch.org/whl/cu124
+# ── uv ────────────────────────────────────────────────────────────────────
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_SYSTEM_PYTHON=1 \
+    UV_NO_CACHE=1
 
 # ── Python dependencies ────────────────────────────────────────────────────
-RUN pip install --no-cache-dir \
-    runpod \
-    "numpy>=1.24" \
-    einops \
-    einx \
-    "x-transformers>=1.42" \
-    pyyaml \
-    tqdm \
-    "opencv-python-headless>=4.11" \
-    "gdown>=5.0"
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
 
 # ── Application source ─────────────────────────────────────────────────────
 COPY diffink/ ./diffink/
