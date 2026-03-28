@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data and checkpoints (large files)
+data/
+checkpoints/
+outputs/
+
+# Editor
+.idea/
+.vscode/
+*.swp

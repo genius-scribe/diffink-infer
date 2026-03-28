@@ -1,0 +1,59 @@
+# DiffInk inference configuration
+# ---------------------------------------------------------------------------
+# Model architecture (must match the pretrained checkpoints)
+# ---------------------------------------------------------------------------
+
+# InkVAE
+in_channels: 5
+latent_dim: 384
+hidden_dims: [128, 256, 384]
+decoder_dims: [384, 256, 128]
+decoder_output_dim: 123
+num_text_embedding: 1000   # updated automatically from text_file
+
+# VAE transformer decoder
+trans_hidden_dim: 256
+trans_num_heads: 4
+trans_num_layers: 3
+
+# OCR module (part of VAE)
+ocr_hidden_dim: 384
+ocr_num_heads: 4
+ocr_num_layers: 3
+
+# Style classifier (part of VAE)
+num_writer: 90
+style_classifier_dim: 384
+
+# InkDiT
+dim: 896
+depth: 16
+heads: 14
+dim_head: 64
+dropout: 0.1
+ff_mult: 4
+text_dim: 512
+text_mask_padding: true
+conv_layers: 3
+long_skip_connection: false
+
+# ---------------------------------------------------------------------------
+# Data paths  (edit these to point to your downloaded data)
+# ---------------------------------------------------------------------------
+val_file:    './data/val.h5'
+text_file:   './data/All_zi.json'
+writer_file: './data/selected_400_100.json'
+
+# ---------------------------------------------------------------------------
+# Checkpoint paths  (edit these to point to your downloaded checkpoints)
+# ---------------------------------------------------------------------------
+vae_model_path:  './checkpoints/vae_epoch_100.pt'
+dit_resume_ckpt: './checkpoints/dit_epoch_1.pt'
+
+# ---------------------------------------------------------------------------
+# Inference settings
+# ---------------------------------------------------------------------------
+val_batch_size:      64
+output_base:         './outputs/inference'
+sampling_timesteps:  20      # DDIM steps (20 is the default used in the paper)
+cfg_scale:           1.0     # classifier-free guidance scale
