@@ -28,6 +28,7 @@ import json
 import os
 import tempfile
 
+import gdown
 import numpy as np
 import runpod
 import torch
@@ -46,6 +47,21 @@ from diffink.utils.visual import plot_line_cv2
 VAE_CKPT   = os.environ.get("VAE_CKPT",   "checkpoints/vae_epoch_100.pt")
 DIT_CKPT   = os.environ.get("DIT_CKPT",   "checkpoints/dit_epoch_1.pt")
 VOCAB_PATH = os.environ.get("VOCAB_PATH", "data/All_zi.json")
+
+# ---------------------------------------------------------------------------
+# Download checkpoints if not present (runs once per worker lifetime)
+# ---------------------------------------------------------------------------
+_GDRIVE_FILES = [
+    (VOCAB_PATH, "1yQpL0oxC5dv8yXTdWuHsdkaZpAI4XYeQ"),   # ~44 KB
+    (VAE_CKPT,   "11fprScAKJnML2Dv_BFZ5JDSQ1cQm341t"),   # ~171 MB
+    (DIT_CKPT,   "13sApjo9rqFHdfNnWmiWaRjFVWewJqECY"),   # ~2.8 GB
+]
+
+for _path, _fid in _GDRIVE_FILES:
+    if not os.path.exists(_path):
+        os.makedirs(os.path.dirname(_path), exist_ok=True)
+        print(f"Downloading {_path} ...")
+        gdown.download(id=_fid, output=_path, quiet=False)
 
 # ---------------------------------------------------------------------------
 # Load character vocabulary

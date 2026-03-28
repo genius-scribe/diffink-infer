@@ -31,18 +31,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY diffink/ ./diffink/
 COPY handler.py ./
 
-# ── Download pretrained weights and vocabulary from Google Drive ───────────
-# File IDs from https://drive.google.com/drive/folders/1h_uLmn-55WmbSBGh1ES8-rftAbDs8riB
-RUN mkdir -p checkpoints data
-
-# Character vocabulary (~44 KB) — download first to fail fast
-RUN python -m gdown 1yQpL0oxC5dv8yXTdWuHsdkaZpAI4XYeQ -O data/All_zi.json
-
-# InkVAE checkpoint (~171 MB)
-RUN python -m gdown 11fprScAKJnML2Dv_BFZ5JDSQ1cQm341t -O checkpoints/vae_epoch_100.pt
-
-# InkDiT checkpoint (~2.8 GB)
-RUN python -m gdown 13sApjo9rqFHdfNnWmiWaRjFVWewJqECY -O checkpoints/dit_epoch_1.pt
-
 # ── Entrypoint ─────────────────────────────────────────────────────────────
+# Checkpoints (~3 GB total) are downloaded at worker startup by handler.py
+# via gdown if not already present on the container's disk.
 CMD ["python", "-u", "handler.py"]
