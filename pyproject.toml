@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "DiffInk inference — Glyph- and Style-Aware Latent Diffusion Transformer for online handwriting generation"
 requires-python = ">=3.10"
 dependencies = [
-    "torch==2.0.0+cu118",
-    "torchvision==0.15.1+cu118",
-    "torchaudio==2.0.1+cu118",
-    "numpy>=1.24,<2.0",
+    "torch==2.4.1+cu124",
+    "torchvision==0.19.1+cu124",
+    "torchaudio==2.4.1+cu124",
+    "numpy>=1.24",
     "h5py>=3.11",
     "einops>=0.8",
     "einx>=0.3",
@@ -31,11 +31,11 @@ build-backend = "hatchling.build"
 packages = ["diffink"]
 
 [[tool.uv.index]]
-name = "pytorch-cu118"
-url = "https://download.pytorch.org/whl/cu118"
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu118" }
-torchvision = { index = "pytorch-cu118" }
-torchaudio = { index = "pytorch-cu118" }
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }

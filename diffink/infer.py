@@ -33,7 +33,7 @@ def load_vae(config: ModelConfig, config_dict: dict, device: torch.device) -> VA
     path = config_dict.get("vae_model_path")
     if path and os.path.exists(path):
         print(f"Loading VAE from: {path}")
-        ckpt = torch.load(path, map_location=device)
+        ckpt = torch.load(path, map_location=device, weights_only=False)
         sd = ckpt["model_state_dict"]
         if any(k.startswith("module.") for k in sd):
             sd = _strip_module_prefix(sd)
@@ -51,7 +51,7 @@ def load_dit(config: ModelConfig, config_dict: dict, device: torch.device) -> Di
     path = config_dict.get("dit_resume_ckpt")
     if path and os.path.exists(path):
         print(f"Loading DiT from: {path}")
-        ckpt = torch.load(path, map_location=device)
+        ckpt = torch.load(path, map_location=device, weights_only=False)
         sd = ckpt["model_state_dict"]
         if any(k.startswith("module.") for k in sd):
             sd = _strip_module_prefix(sd)
