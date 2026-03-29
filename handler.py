@@ -230,6 +230,7 @@ def handler(event: dict) -> dict:
     temperature        = float(inp.get("temperature", 0.1))
     greedy             = bool(inp.get("greedy", True))
     output_image       = bool(inp.get("output_image", True))
+    prefix_ratio       = inp.get("prefix_ratio")          # float or None (auto)
 
     # --- Decode style strokes ---
     try:
@@ -256,6 +257,22 @@ def handler(event: dict) -> dict:
     except ValueError as e:
         return {"error": str(e)}
 
+    # --- Auto prefix_ratio ---
+    # text should contain: style_text (matching style strokes) + target_text
+    # e.g. style_strokes="2006年上海证券...", text="2006年上海证券溯川科技有限公司"
+    # prefix_ratio = num_style_chars / num_total_chars
+    if prefix_ratio is None:
+        num_style_chars = len(char_points_idx)
+        num_text_chars = len(text_indices) - 1  # exclude trailing marker
+        if num_text_chars > 0:
+            prefix_ratio = min(num_style_chars / num_text_chars, 0.95)
+        else:
+            prefix_ratio = 0.3
+        print(f"Auto prefix_ratio: {prefix_ratio:.3f} ({num_style_chars} style chars / {num_text_chars} text chars)")
+    else:
+        prefix_ratio = float(prefix_ratio)
+        print(f"Manual prefix_ratio: {prefix_ratio:.3f}")
+
     # --- Build tensors ---
     strokes_padded, seq_len = _pad_to_multiple_of_8(strokes)
     T = strokes_padded.shape[0]
@@ -276,7 +293,7 @@ def handler(event: dict) -> dict:
             char_points_idx=[char_points_idx],
             mask=mask,
             compression_factor=8,
-            prefix_ratio=0.3,
+            prefix_ratio=prefix_ratio,
         )
         final_noise_mask = latent_mask * latent_padding_mask  # [1, T_lat]
 
