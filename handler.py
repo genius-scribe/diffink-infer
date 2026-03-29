@@ -68,9 +68,9 @@ VOCAB_PATH = os.environ.get("VOCAB_PATH", _resolve("data/All_zi.json"))
 _R2_BASE = "https://pub-233b8b390a4b4668b0e5fd1f4cd5a2bf.r2.dev/diffink"
 
 _R2_FILES = [
-    (VOCAB_PATH, f"{_R2_BASE}/All_zi.json"),             # ~44 KB
-    (VAE_CKPT,   f"{_R2_BASE}/vae_epoch_100.pt"),         # ~171 MB
-    (DIT_CKPT,   f"{_R2_BASE}/dit_epoch_1.pt"),           # ~2.8 GB
+    (VOCAB_PATH, f"{_R2_BASE}/meta/All_zi.json"),                      # ~44 KB
+    (VAE_CKPT,   f"{_R2_BASE}/checkpoints/vae_epoch_100.pt"),           # ~171 MB
+    (DIT_CKPT,   f"{_R2_BASE}/checkpoints/dit_epoch_1-001.pt"),         # ~2.8 GB
 ]
 
 for _path, _url in _R2_FILES:
