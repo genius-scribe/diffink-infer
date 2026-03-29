@@ -18,7 +18,9 @@ prefix+suffix = one continuous sentence.  We adapt it for online inference:
 
 1.  full_text  = reference_text + target_text
 2.  prefix_ratio = len(ref_chars) / len(full_text)
-3.  reference_strokes supply the prefix; the DiT generates the suffix.
+3.  Estimate target stroke length from reference avg-points-per-char
+4.  Pad reference strokes with zero-padding for the target portion
+5.  The DiT generates strokes for the suffix (target) portion.
 
 This is an approximation — the model never saw cross-sentence generation
 during training — but it works well enough when the style reference is long
@@ -26,7 +28,6 @@ enough to give the model a good style anchor.
 """
 
 import base64
-import io
 import json
 import os
 import tempfile
@@ -159,13 +160,11 @@ def _text_to_indices(text: str) -> list[int]:
         if c not in CHAR_TO_IDX:
             raise ValueError(f"Character '{c}' (U+{ord(c):04X}) not in vocabulary")
         indices.append(CHAR_TO_IDX[c])
-    # Trailing marker — ValDataset always appends '、'
     indices.append(CHAR_TO_IDX.get("、", 0))
     return indices
 
 
 def _derive_char_points_idx(strokes: np.ndarray) -> list[int]:
-    """Derive character-end positions from pen-state columns."""
     mask = (strokes[:, 2].astype(int) == 0) & \
            (strokes[:, 3].astype(int) == 0) & \
            (strokes[:, 4].astype(int) == 1)
@@ -182,7 +181,6 @@ def _pad_to_multiple_of_8(strokes: np.ndarray):
 
 
 def _check_vocab(text: str) -> list[str]:
-    """Return list of characters not in the vocabulary."""
     return [c for c in text if c not in CHAR_TO_IDX]
 
 
@@ -194,28 +192,9 @@ def handler(event: dict) -> dict:
     inp = event["input"]
 
     # --- Inputs ---
-    # New interface (recommended):
-    #   reference_strokes, reference_text, target_text
-    # Legacy interface:
-    #   style_strokes, text
-
-    ref_strokes_b64 = inp.get("reference_strokes") or inp.get("style_strokes")
-    ref_text        = inp.get("reference_text", "")
-    target_text     = inp.get("target_text", "")
-
-    # Legacy: if only "text" provided (without reference_text), treat it as
-    # the full concatenated text (ref+target).  The user is responsible for
-    # correct concatenation.
-    full_text = inp.get("text", "") if not ref_text and not target_text else ""
-    if full_text and not ref_text:
-        # Legacy mode — text is the complete concatenated string
-        ref_text = ""      # we don't know where the split is
-        target_text = full_text
-
-    if ref_text and target_text:
-        full_text = ref_text + target_text
-    elif not full_text:
-        return {"error": "Provide either (reference_text + target_text) or text"}
+    ref_strokes_b64: str = inp["reference_strokes"]
+    ref_text: str        = inp["reference_text"]
+    target_text: str     = inp["target_text"]
 
     # --- Options ---
     char_points_idx     = inp.get("char_points_idx")
@@ -226,8 +205,6 @@ def handler(event: dict) -> dict:
     output_image        = bool(inp.get("output_image", True))
 
     # --- Decode reference strokes ---
-    if not ref_strokes_b64:
-        return {"error": "No reference_strokes / style_strokes provided"}
     try:
         raw = base64.b64decode(ref_strokes_b64)
         ref_strokes = np.frombuffer(raw, dtype=np.float32).reshape(-1, 5)
@@ -240,40 +217,56 @@ def handler(event: dict) -> dict:
     if len(char_points_idx) == 0:
         return {"error": "No character boundaries found in reference strokes"}
 
-    # --- Vocabulary check ---
+    num_ref_chars = len(char_points_idx)
+
+    # --- Verify reference_text matches stroke count ---
+    if len(ref_text) != num_ref_chars:
+        return {
+            "error": f"reference_text length ({len(ref_text)}) != "
+                     f"character boundaries in strokes ({num_ref_chars})"
+        }
+
+    # --- Full text & vocabulary check ---
+    full_text = ref_text + target_text
     bad_chars = _check_vocab(full_text)
     if bad_chars:
         return {"error": f"Characters not in vocabulary ({len(bad_chars)}): {''.join(bad_chars[:20])}"}
 
-    # --- Text indices ---
-    try:
-        text_indices = _text_to_indices(full_text)
-    except ValueError as e:
-        return {"error": str(e)}
+    text_indices = _text_to_indices(full_text)
+    num_total_chars = len(text_indices) - 1  # exclude trailing marker
+    num_target_chars = len(target_text)
+
+    # --- Estimate target stroke length ---
+    # avg points per character from the reference
+    avg_pts = len(ref_strokes) / num_ref_chars
+    target_pts = int(avg_pts * num_target_chars)
+    # Pad reference with enough zero-rows for the target portion
+    # plus extra to reach a multiple of 8
+    target_pts = ((target_pts + 7) // 8) * 8  # round up to multiple of 8
+
+    zero_pad = np.zeros((target_pts, 5), dtype=np.float32)
+    zero_pad[:, 4] = 1  # mark as new-character (pad)
+
+    full_strokes = np.vstack([ref_strokes, zero_pad])
+    full_strokes, total_len = _pad_to_multiple_of_8(full_strokes)
 
     # --- prefix_ratio ---
-    num_ref_chars  = len(char_points_idx)
-    num_text_chars = len(text_indices) - 1   # exclude trailing marker
-
-    # If we have ref_text, verify it matches
-    if ref_text:
-        if len(ref_text) != num_ref_chars:
-            print(f"[warn] reference_text length ({len(ref_text)}) != "
-                  f"char_points_idx count ({num_ref_chars}), using char_points_idx")
-
-    prefix_ratio = min(num_ref_chars / num_text_chars, 0.95) if num_text_chars > 0 else 0.3
-    print(f"prefix_ratio={prefix_ratio:.3f}  ref_chars={num_ref_chars}  "
-          f"total_chars={num_text_chars}  target_chars={num_text_chars - num_ref_chars}")
+    prefix_ratio = num_ref_chars / num_total_chars
+    print(f"ref_chars={num_ref_chars} target_chars={num_target_chars} "
+          f"total_chars={num_total_chars} prefix_ratio={prefix_ratio:.3f} "
+          f"ref_pts={len(ref_strokes)} target_pts≈{target_pts} total_pts={full_strokes.shape[0]}")
 
     # --- Build tensors ---
-    ref_padded, ref_len = _pad_to_multiple_of_8(ref_strokes)
-    T = ref_padded.shape[0]
+    T = full_strokes.shape[0]
+    data = torch.tensor(full_strokes, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
-    data = torch.tensor(ref_padded, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-
-    pad_val = np.array([0, 0, 0, 0, 1], dtype=np.float32)
-    is_pad  = np.all(ref_padded == pad_val, axis=1)
-    mask    = torch.tensor(~is_pad, dtype=torch.bool).unsqueeze(0).to(DEVICE)
+    mask_ref = np.ones(len(ref_strokes), dtype=bool)
+    mask_pad = np.zeros(target_pts, dtype=bool)
+    mask_np = np.concatenate([mask_ref, mask_pad])
+    # Re-pad to match T
+    if len(mask_np) < T:
+        mask_np = np.concatenate([mask_np, np.zeros(T - len(mask_np), dtype=bool)])
+    mask = torch.tensor(mask_np, dtype=torch.bool).unsqueeze(0).to(DEVICE)
 
     text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)
 
@@ -308,17 +301,18 @@ def handler(event: dict) -> dict:
 
         params = [pi[0].cpu(), mu1[0].cpu(), mu2[0].cpu(),
                   sigma1[0].cpu(), sigma2[0].cpu(), corr[0].cpu(), pen[0].cpu()]
-        recon = sample_from_params(params, temp=temperature, max_seq_len=ref_len, greedy=greedy)
+        recon = sample_from_params(params, temp=temperature, max_seq_len=total_len, greedy=greedy)
 
     # --- Output ---
     recon_f32 = recon.astype(np.float32)
     result = {
         "strokes":  base64.b64encode(recon_f32.tobytes()).decode("utf-8"),
-        "seq_len":  int(ref_len),
+        "seq_len":  int(total_len),
         "shape":    list(recon_f32.shape),
         "prefix_ratio": round(prefix_ratio, 4),
         "ref_chars": num_ref_chars,
-        "target_chars": num_text_chars - num_ref_chars,
+        "target_chars": num_target_chars,
+        "avg_pts_per_char": round(avg_pts, 1),
     }
 
     if output_image:
