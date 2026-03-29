@@ -245,7 +245,7 @@ def handler(event: dict) -> dict:
     target_pts = ((target_pts + 7) // 8) * 8  # round up to multiple of 8
 
     zero_pad = np.zeros((target_pts, 5), dtype=np.float32)
-    zero_pad[:, 4] = 1  # mark as new-character (pad)
+    # zero_pad[:, 4] = 1  ← DO NOT set is_new_char=1, it pollutes char_points_idx
 
     full_strokes = np.vstack([ref_strokes, zero_pad])
     full_strokes, total_len = _pad_to_multiple_of_8(full_strokes)
