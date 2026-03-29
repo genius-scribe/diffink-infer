@@ -43,30 +43,13 @@ from diffink.utils.visual import plot_line_cv2
 
 # ---------------------------------------------------------------------------
 # Paths (override via environment variables)
-# Network volume mount point — models persist across worker restarts
 # ---------------------------------------------------------------------------
-_VOLUME = os.environ.get("RUNPOD_VOLUME_PATH", "/runpod-volume")
-
-def _resolve_path(env_key: str, rel: str) -> str:
-    """Prefer network-volume path, fall back to container-disk path."""
-    explicit = os.environ.get(env_key)
-    if explicit:
-        return explicit
-    vol_path = os.path.join(_VOLUME, rel)
-    if os.path.exists(vol_path):
-        return vol_path
-    # If volume is mounted, download there so models persist across restarts
-    if os.path.ismount(_VOLUME):
-        return vol_path
-    return rel
-
-VAE_CKPT   = _resolve_path("VAE_CKPT",   "checkpoints/vae_epoch_100.pt")
-DIT_CKPT   = _resolve_path("DIT_CKPT",   "checkpoints/dit_epoch_1.pt")
-VOCAB_PATH = _resolve_path("VOCAB_PATH", "data/All_zi.json")
+VAE_CKPT   = os.environ.get("VAE_CKPT",   "checkpoints/vae_epoch_100.pt")
+DIT_CKPT   = os.environ.get("DIT_CKPT",   "checkpoints/dit_epoch_1.pt")
+VOCAB_PATH = os.environ.get("VOCAB_PATH", "data/All_zi.json")
 
 # ---------------------------------------------------------------------------
 # Download checkpoints if not present (runs once per worker lifetime)
-# Downloads to network volume when available so models persist across restarts
 # ---------------------------------------------------------------------------
 _GDRIVE_FILES = [
     (VOCAB_PATH, "1yQpL0oxC5dv8yXTdWuHsdkaZpAI4XYeQ"),   # ~44 KB
