@@ -271,9 +271,12 @@ def handler(event: dict) -> dict:
     T = full_strokes.shape[0]
     data = torch.tensor(full_strokes, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
-    # Padding mask: reference = valid (1), target + padding = invalid (0)
-    mask_np = np.zeros(T, dtype=bool)
-    mask_np[:len(ref_strokes)] = True
+    # Mark ALL positions as valid (1) so that latent_padding_mask = 1 everywhere.
+    # This way final_noise_mask = latent_mask * 1 = latent_mask, and the model
+    # can generate in the suffix (padding) region.
+    # If we mark padding as invalid (0), then final_noise_mask becomes all-zeros
+    # and nothing gets generated.
+    mask_np = np.ones(T, dtype=bool)
     mask = torch.tensor(mask_np, dtype=torch.bool).unsqueeze(0).to(DEVICE)
 
     text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)
