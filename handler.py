@@ -259,8 +259,11 @@ def handler(event: dict) -> dict:
 
     # --- Auto prefix_ratio ---
     # text should contain: style_text (matching style strokes) + target_text
-    # e.g. style_strokes="2006年上海证券...", text="2006年上海证券溯川科技有限公司"
+    # e.g. style_strokes contains "2006年上海证券...", text="2006年上海证券...溯川科技"
     # prefix_ratio = num_style_chars / num_total_chars
+    # The model preserves the first prefix_ratio portion and generates the rest
+    # IMPORTANT: style_text must be the COMPLETE text represented by style_strokes,
+    # not just a few characters. Check char_points_idx for the exact count.
     if prefix_ratio is None:
         num_style_chars = len(char_points_idx)
         num_text_chars = len(text_indices) - 1  # exclude trailing marker
