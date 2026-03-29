@@ -237,35 +237,43 @@ def handler(event: dict) -> dict:
     num_target_chars = len(target_text)
 
     # --- Estimate target stroke length ---
-    # avg points per character from the reference
+    # --- Estimate target stroke length & character boundaries ---
     avg_pts = len(ref_strokes) / num_ref_chars
     target_pts = int(avg_pts * num_target_chars)
-    # Pad reference with enough zero-rows for the target portion
-    # plus extra to reach a multiple of 8
     target_pts = ((target_pts + 7) // 8) * 8  # round up to multiple of 8
 
     zero_pad = np.zeros((target_pts, 5), dtype=np.float32)
-    # zero_pad[:, 4] = 1  ← DO NOT set is_new_char=1, it pollutes char_points_idx
+    # DO NOT set is_new_char=1 on padding — it pollutes char_points_idx
 
     full_strokes = np.vstack([ref_strokes, zero_pad])
     full_strokes, total_len = _pad_to_multiple_of_8(full_strokes)
+
+    # Build estimated character boundaries for the FULL sequence (ref + target).
+    # build_prefix_mask_from_char_points needs to see ALL characters so that
+    # num_prefix_chars = int(num_total * prefix_ratio) correctly = num_ref_chars.
+    ref_boundaries = list(char_points_idx)
+    target_boundaries = [
+        int(ref_boundaries[-1] + avg_pts * (i + 1))
+        for i in range(num_target_chars)
+    ]
+    all_char_boundaries = ref_boundaries + target_boundaries
+    # Clamp to actual sequence length (some estimates may exceed padded length)
+    all_char_boundaries = [b for b in all_char_boundaries if b < full_strokes.shape[0]]
 
     # --- prefix_ratio ---
     prefix_ratio = num_ref_chars / num_total_chars
     print(f"ref_chars={num_ref_chars} target_chars={num_target_chars} "
           f"total_chars={num_total_chars} prefix_ratio={prefix_ratio:.3f} "
-          f"ref_pts={len(ref_strokes)} target_pts≈{target_pts} total_pts={full_strokes.shape[0]}")
+          f"ref_pts={len(ref_strokes)} target_pts≈{target_pts} total_pts={full_strokes.shape[0]} "
+          f"boundaries={len(all_char_boundaries)}")
 
     # --- Build tensors ---
     T = full_strokes.shape[0]
     data = torch.tensor(full_strokes, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
-    mask_ref = np.ones(len(ref_strokes), dtype=bool)
-    mask_pad = np.zeros(target_pts, dtype=bool)
-    mask_np = np.concatenate([mask_ref, mask_pad])
-    # Re-pad to match T
-    if len(mask_np) < T:
-        mask_np = np.concatenate([mask_np, np.zeros(T - len(mask_np), dtype=bool)])
+    # Padding mask: reference = valid (1), target + padding = invalid (0)
+    mask_np = np.zeros(T, dtype=bool)
+    mask_np[:len(ref_strokes)] = True
     mask = torch.tensor(mask_np, dtype=torch.bool).unsqueeze(0).to(DEVICE)
 
     text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)
@@ -275,7 +283,7 @@ def handler(event: dict) -> dict:
         feat = VAE_MODEL.encode(data.permute(0, 2, 1))[0].permute(0, 2, 1)
 
         latent_mask, latent_padding_mask, _ = build_prefix_mask_from_char_points(
-            char_points_idx=[char_points_idx],
+            char_points_idx=[all_char_boundaries],
             mask=mask,
             compression_factor=8,
             prefix_ratio=prefix_ratio,
