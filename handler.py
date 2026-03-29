@@ -77,11 +77,31 @@ for _path, _url, _min_size in _R2_FILES:
     _need_download = not os.path.exists(_path) or os.path.getsize(_path) < _min_size * 0.9
     if _need_download:
         os.makedirs(os.path.dirname(_path), exist_ok=True)
-        print(f"Downloading {_url} → {_path} ...")
-        subprocess.run(
-            ["wget", "--show-progress", "-O", _path, _url],
-            check=True,
-        )
+        _lock_path = _path + ".lock"
+        _downloading_path = _path + ".downloading"
+        # Spin-wait if another worker is downloading
+        while os.path.exists(_downloading_path):
+            print(f"[wait] {_path} is being downloaded by another worker ...")
+            import time; time.sleep(5)
+            if os.path.exists(_path) and os.path.getsize(_path) >= _min_size * 0.9:
+                print(f"[skip] {_path} ready after waiting")
+                break
+        else:
+            # Re-check after waiting
+            if os.path.exists(_path) and os.path.getsize(_path) >= _min_size * 0.9:
+                print(f"[skip] {_path} already exists ({os.path.getsize(_path)} bytes)")
+                continue
+            # Mark as downloading
+            with open(_downloading_path, "w") as _f:
+                _f.write(str(os.getpid()))
+            try:
+                print(f"Downloading {_url} → {_path} ...")
+                subprocess.run(
+                    ["wget", "--show-progress", "-O", _path, _url],
+                    check=True,
+                )
+            finally:
+                os.remove(_downloading_path)
     else:
         print(f"[skip] {_path} already exists ({os.path.getsize(_path)} bytes)")
 
