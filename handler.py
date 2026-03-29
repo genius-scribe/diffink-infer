@@ -5,6 +5,7 @@ RunPod Serverless handler for DiffInk — online handwriting generation.
 
     {
       "reference_strokes": "<base64 float32 [T,5]: x y is_next is_new_stroke is_new_char>",
+      "reference_text":    "the full text that the reference strokes represent",
       "target_text":       "the text you want to generate",
       "num_style_chars":   9   // how many leading ref chars to keep as style anchor (default 9)
     }
@@ -171,6 +172,7 @@ def handler(event):
 
     # --- Inputs ---
     ref_strokes_b64 = inp["reference_strokes"]
+    reference_text  = inp["reference_text"]   # text of the style reference
     target_text     = inp["target_text"]
     num_style_chars = int(inp.get("num_style_chars", 9))
 
@@ -202,16 +204,21 @@ def handler(event):
     style_strokes = ref_strokes[:trim_end]
     style_char_idx = char_points_idx[:num_style_chars]
 
-    # --- Text ---
-    bad = [c for c in target_text if c not in CHAR_TO_IDX]
+    # --- Text: style reference + target ---
+    # The model was trained with text matching the style strokes.
+    # We need the style text so the model knows what the prefix is "saying".
+    style_text = reference_text[:num_style_chars]
+    full_text = style_text + target_text
+
+    bad = [c for c in full_text if c not in CHAR_TO_IDX]
     if bad:
         return {"error": f"Characters not in vocabulary ({len(bad)}): {''.join(bad[:20])}"}
 
-    text_indices = _text_to_indices(target_text)
-    num_target = len(text_indices) - 1  # exclude trailing marker
+    text_indices = _text_to_indices(full_text)
+    num_target = len(target_text)
 
     print(f"style: {num_style_chars} chars ({trim_end} pts), "
-          f"target: {num_target} chars '{target_text}'")
+          f"text: '{full_text}' ({len(full_text)} chars)")
 
     # --- Build tensors ---
     padded, seq_len = _pad_to_multiple_of_8(style_strokes)
