@@ -331,7 +331,7 @@ def handler(event: dict) -> dict:
             tmp = _f.name
         try:
             plot_line_cv2(recon_f32, tmp, canvas_height=256, padding=20,
-                          line_thickness=2, max_dist=200)
+                          line_thickness=2, max_dist=5000)
             with open(tmp, "rb") as _f:
                 result["image"] = base64.b64encode(_f.read()).decode("utf-8")
         finally:
