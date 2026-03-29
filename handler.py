@@ -43,15 +43,27 @@ from diffink.utils.utils import ModelConfig
 from diffink.utils.visual import plot_line_cv2
 
 # ---------------------------------------------------------------------------
-# Paths (override via environment variables)
+# Paths — prefer network volume (/runpod-volume), fall back to local
 # ---------------------------------------------------------------------------
-VAE_CKPT   = os.environ.get("VAE_CKPT",   "checkpoints/vae_epoch_100.pt")
-DIT_CKPT   = os.environ.get("DIT_CKPT",   "checkpoints/dit_epoch_1.pt")
-VOCAB_PATH = os.environ.get("VOCAB_PATH", "data/All_zi.json")
+_VOLUME = "/runpod-volume"
+
+def _resolve(rel: str) -> str:
+    """Return volume path if volume is mounted, else local path."""
+    vol_path = os.path.join(_VOLUME, rel)
+    if os.path.exists(vol_path):
+        return vol_path
+    if os.path.ismount(_VOLUME):
+        return vol_path
+    return rel
+
+VAE_CKPT   = os.environ.get("VAE_CKPT",   _resolve("checkpoints/vae_epoch_100.pt"))
+DIT_CKPT   = os.environ.get("DIT_CKPT",   _resolve("checkpoints/dit_epoch_1.pt"))
+VOCAB_PATH = os.environ.get("VOCAB_PATH", _resolve("data/All_zi.json"))
 
 # ---------------------------------------------------------------------------
 # Download checkpoints if not present (runs once per worker lifetime)
 # Uses Cloudflare R2 public bucket (no rate limits, fast CDN)
+# Downloads to network volume when available so files persist across restarts
 # ---------------------------------------------------------------------------
 _R2_BASE = "https://pub-233b8b390a4b4668b0e5fd1f4cd5a2bf.r2.dev/diffink"
 
