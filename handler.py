@@ -1,25 +1,28 @@
 """
-RunPod Serverless handler for DiffInk online handwriting generation.
+RunPod Serverless handler for DiffInk — online handwriting generation.
 
-Input schema (event["input"]):
-  text              str   — Chinese characters to generate (must be in vocabulary)
-  style_strokes     str   — Base64-encoded float32 array, shape [T, 5].
-                            Columns: (x, y, is_next, is_new_stroke, is_new_char).
-                            Used as the style reference; the first ~30% of characters
-                            act as a conditioning prefix, the rest are regenerated.
-  char_points_idx   list  — (optional) int indices of the last point of each character.
-                            Auto-derived from is_new_char column if omitted.
-  sampling_timesteps int  — DDIM steps (default 20)
-  cfg_scale         float — classifier-free guidance scale (default 1.0)
-  temperature       float — GMM sampling temperature (default 0.1)
-  greedy            bool  — use greedy (mean) GMM sampling (default true)
-  output_image      bool  — include base64 PNG in response (default true)
+## Usage
 
-Output schema:
-  strokes           str   — Base64-encoded float32 array, shape [seq_len, 5]
-  image             str   — Base64-encoded PNG (if output_image=true)
-  seq_len           int   — number of valid stroke points
-  shape             list  — [seq_len, 5]
+    {
+      "reference_strokes": "<base64 float32 [T,5]: x y is_next is_new_stroke is_new_char>",
+      "reference_text":    "the text that the reference strokes represent",
+      "target_text":       "the text you want to generate",
+      "temperature":       0.1,
+      "sampling_timesteps": 20
+    }
+
+## Design notes
+
+The model was trained on (prefix-strokes, text) → (suffix-strokes) where
+prefix+suffix = one continuous sentence.  We adapt it for online inference:
+
+1.  full_text  = reference_text + target_text
+2.  prefix_ratio = len(ref_chars) / len(full_text)
+3.  reference_strokes supply the prefix; the DiT generates the suffix.
+
+This is an approximation — the model never saw cross-sentence generation
+during training — but it works well enough when the style reference is long
+enough to give the model a good style anchor.
 """
 
 import base64
@@ -27,7 +30,6 @@ import io
 import json
 import os
 import tempfile
-
 import subprocess
 
 import numpy as np
@@ -48,7 +50,6 @@ from diffink.utils.visual import plot_line_cv2
 _VOLUME = "/runpod-volume"
 
 def _resolve(rel: str) -> str:
-    """Return volume path if volume is mounted, else local path."""
     vol_path = os.path.join(_VOLUME, rel)
     if os.path.exists(vol_path):
         return vol_path
@@ -61,91 +62,64 @@ DIT_CKPT   = os.environ.get("DIT_CKPT",   _resolve("checkpoints/dit_epoch_1.pt")
 VOCAB_PATH = os.environ.get("VOCAB_PATH", _resolve("data/All_zi.json"))
 
 # ---------------------------------------------------------------------------
-# Download checkpoints if not present (runs once per worker lifetime)
-# Uses Cloudflare R2 public bucket (no rate limits, fast CDN)
-# Downloads to network volume when available so files persist across restarts
+# Download checkpoints if not present (once per worker lifetime)
 # ---------------------------------------------------------------------------
 _R2_BASE = "https://pub-233b8b390a4b4668b0e5fd1f4cd5a2bf.r2.dev/diffink"
 
 _R2_FILES = [
-    (VOCAB_PATH, f"{_R2_BASE}/meta/All_zi.json", 44043),                      # ~44 KB
-    (VAE_CKPT,   f"{_R2_BASE}/checkpoints/vae_epoch_100.pt", 178524954),      # ~171 MB
-    (DIT_CKPT,   f"{_R2_BASE}/checkpoints/dit_epoch_1-001.pt", 2914621632),   # ~2.8 GB
+    (VOCAB_PATH, f"{_R2_BASE}/meta/All_zi.json", 44043),
+    (VAE_CKPT,   f"{_R2_BASE}/checkpoints/vae_epoch_100.pt", 178524954),
+    (DIT_CKPT,   f"{_R2_BASE}/checkpoints/dit_epoch_1-001.pt", 2914621632),
 ]
 
 for _path, _url, _min_size in _R2_FILES:
-    _need_download = not os.path.exists(_path) or os.path.getsize(_path) < _min_size * 0.9
-    if _need_download:
+    if not os.path.exists(_path) or os.path.getsize(_path) < _min_size * 0.9:
         os.makedirs(os.path.dirname(_path), exist_ok=True)
-        _lock_path = _path + ".lock"
         _downloading_path = _path + ".downloading"
-        # Spin-wait if another worker is downloading
         while os.path.exists(_downloading_path):
-            print(f"[wait] {_path} is being downloaded by another worker ...")
+            print(f"[wait] {_path} being downloaded by another worker ...")
             import time; time.sleep(5)
             if os.path.exists(_path) and os.path.getsize(_path) >= _min_size * 0.9:
                 print(f"[skip] {_path} ready after waiting")
                 break
         else:
-            # Re-check after waiting
             if os.path.exists(_path) and os.path.getsize(_path) >= _min_size * 0.9:
                 print(f"[skip] {_path} already exists ({os.path.getsize(_path)} bytes)")
                 continue
-            # Mark as downloading
             with open(_downloading_path, "w") as _f:
                 _f.write(str(os.getpid()))
             try:
                 print(f"Downloading {_url} → {_path} ...")
-                subprocess.run(
-                    ["wget", "--show-progress", "-O", _path, _url],
-                    check=True,
-                )
+                subprocess.run(["wget", "--show-progress", "-O", _path, _url], check=True)
             finally:
                 os.remove(_downloading_path)
     else:
         print(f"[skip] {_path} already exists ({os.path.getsize(_path)} bytes)")
 
 # ---------------------------------------------------------------------------
-# Load character vocabulary
+# Vocabulary
 # ---------------------------------------------------------------------------
 print("Loading vocabulary...")
-with open(VOCAB_PATH, "r", encoding="utf-8") as f:
-    _vocab_data = json.load(f)
+with open(VOCAB_PATH, "r", encoding="utf-8") as _f:
+    _vocab_data = json.load(_f)
 CHAR_TO_IDX: dict[str, int] = {k: i for i, k in enumerate(_vocab_data.keys())}
-NUM_TEXT_EMBEDDING = len(CHAR_TO_IDX) + 1  # index 0 reserved for padding
+_NUM_EMBEDDING = len(CHAR_TO_IDX) + 1
 
 # ---------------------------------------------------------------------------
-# Model config (must match the pretrained checkpoints)
+# Model config
 # ---------------------------------------------------------------------------
-_config_dict = {
-    # InkVAE
-    "in_channels": 5,
-    "latent_dim": 384,
-    "hidden_dims": [128, 256, 384],
-    "decoder_dims": [384, 256, 128],
-    "decoder_output_dim": 123,
-    "num_text_embedding": NUM_TEXT_EMBEDDING,
-    "trans_hidden_dim": 256,
-    "trans_num_heads": 4,
-    "trans_num_layers": 3,
-    "ocr_hidden_dim": 384,
-    "ocr_num_heads": 4,
-    "ocr_num_layers": 3,
-    "num_writer": 90,
-    "style_classifier_dim": 384,
-    # InkDiT
-    "dim": 896,
-    "depth": 16,
-    "heads": 14,
-    "dim_head": 64,
-    "dropout": 0.1,
-    "ff_mult": 4,
-    "text_dim": 512,
-    "text_mask_padding": True,
-    "conv_layers": 3,
-    "long_skip_connection": False,
+_cfg = {
+    "in_channels": 5, "latent_dim": 384,
+    "hidden_dims": [128, 256, 384], "decoder_dims": [384, 256, 128],
+    "decoder_output_dim": 123, "num_text_embedding": _NUM_EMBEDDING,
+    "trans_hidden_dim": 256, "trans_num_heads": 4, "trans_num_layers": 3,
+    "ocr_hidden_dim": 384, "ocr_num_heads": 4, "ocr_num_layers": 3,
+    "num_writer": 90, "style_classifier_dim": 384,
+    "dim": 896, "depth": 16, "heads": 14, "dim_head": 64,
+    "dropout": 0.1, "ff_mult": 4, "text_dim": 512,
+    "text_mask_padding": True, "conv_layers": 3, "long_skip_connection": False,
 }
-CONFIG = ModelConfig(_config_dict)
+CONFIG = ModelConfig(_cfg)
 
 # ---------------------------------------------------------------------------
 # Load models (once, at worker startup)
@@ -153,30 +127,27 @@ CONFIG = ModelConfig(_config_dict)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {DEVICE}")
 
-
-def _load_state_dict(path: str) -> dict:
+def _load_sd(path: str) -> dict:
     ckpt = torch.load(path, map_location=DEVICE, weights_only=False)
     sd = ckpt["model_state_dict"]
     if any(k.startswith("module.") for k in sd):
         sd = {k.replace("module.", ""): v for k, v in sd.items()}
     return sd
 
-
 print("Loading InkVAE...")
 VAE_MODEL = VAE(CONFIG).to(DEVICE).eval()
-_sd = _load_state_dict(VAE_CKPT)
-_model_sd = VAE_MODEL.state_dict()
-_filtered = {k: v for k, v in _sd.items() if k in _model_sd and v.shape == _model_sd[k].shape}
-VAE_MODEL.load_state_dict(_filtered, strict=False)
-print(f"  loaded {len(_filtered)} / {len(_model_sd)} params")
+_sd = _load_sd(VAE_CKPT)
+_ms = VAE_MODEL.state_dict()
+_fl = {k: v for k, v in _sd.items() if k in _ms and v.shape == _ms[k].shape}
+VAE_MODEL.load_state_dict(_fl, strict=False)
+print(f"  loaded {len(_fl)} / {len(_ms)} params")
 
 print("Loading InkDiT...")
 DIT_MODEL = DiT(CONFIG).to(DEVICE).eval()
-DIT_MODEL.load_state_dict(_load_state_dict(DIT_CKPT))
+DIT_MODEL.load_state_dict(_load_sd(DIT_CKPT))
 
 DIFFUSION = Diffusion(noise_steps=1000, schedule_type="cosine", device=DEVICE)
 print("Models ready.")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -188,28 +159,31 @@ def _text_to_indices(text: str) -> list[int]:
         if c not in CHAR_TO_IDX:
             raise ValueError(f"Character '{c}' (U+{ord(c):04X}) not in vocabulary")
         indices.append(CHAR_TO_IDX[c])
-    # Trailing marker consistent with ValDataset (appends '、')
+    # Trailing marker — ValDataset always appends '、'
     indices.append(CHAR_TO_IDX.get("、", 0))
     return indices
 
 
 def _derive_char_points_idx(strokes: np.ndarray) -> list[int]:
-    """Find character-end positions from pen-state column 4 (is_new_char)."""
-    is_next      = strokes[:, 2].astype(int)
-    is_new_stroke = strokes[:, 3].astype(int)
-    is_new_char  = strokes[:, 4].astype(int)
-    idx = np.where((is_next == 0) & (is_new_stroke == 0) & (is_new_char == 1))[0]
-    return idx.tolist()
+    """Derive character-end positions from pen-state columns."""
+    mask = (strokes[:, 2].astype(int) == 0) & \
+           (strokes[:, 3].astype(int) == 0) & \
+           (strokes[:, 4].astype(int) == 1)
+    return np.where(mask)[0].tolist()
 
 
 def _pad_to_multiple_of_8(strokes: np.ndarray):
-    """Pad stroke sequence to length divisible by 8 (VAE compression factor)."""
     T = strokes.shape[0]
     pad_len = (8 - T % 8) % 8
     if pad_len == 0:
         return strokes.copy(), T
     pad_val = np.array([[0, 0, 0, 0, 1]] * pad_len, dtype=np.float32)
-    return np.vstack([strokes, pad_val]), T  # return original T as seq_len
+    return np.vstack([strokes, pad_val]), T
+
+
+def _check_vocab(text: str) -> list[str]:
+    """Return list of characters not in the vocabulary."""
+    return [c for c in text if c not in CHAR_TO_IDX]
 
 
 # ---------------------------------------------------------------------------
@@ -219,78 +193,93 @@ def _pad_to_multiple_of_8(strokes: np.ndarray):
 def handler(event: dict) -> dict:
     inp = event["input"]
 
-    # --- Required inputs ---
-    text: str = inp["text"]
-    strokes_b64: str = inp["style_strokes"]
+    # --- Inputs ---
+    # New interface (recommended):
+    #   reference_strokes, reference_text, target_text
+    # Legacy interface:
+    #   style_strokes, text
 
-    # --- Optional inputs ---
-    char_points_idx = inp.get("char_points_idx")          # list[int] or None
-    sampling_timesteps = int(inp.get("sampling_timesteps", 20))
-    cfg_scale          = float(inp.get("cfg_scale", 1.0))
-    temperature        = float(inp.get("temperature", 0.1))
-    greedy             = bool(inp.get("greedy", True))
-    output_image       = bool(inp.get("output_image", True))
-    prefix_ratio       = inp.get("prefix_ratio")          # float or None (auto)
+    ref_strokes_b64 = inp.get("reference_strokes") or inp.get("style_strokes")
+    ref_text        = inp.get("reference_text", "")
+    target_text     = inp.get("target_text", "")
 
-    # --- Decode style strokes ---
+    # Legacy: if only "text" provided (without reference_text), treat it as
+    # the full concatenated text (ref+target).  The user is responsible for
+    # correct concatenation.
+    full_text = inp.get("text", "") if not ref_text and not target_text else ""
+    if full_text and not ref_text:
+        # Legacy mode — text is the complete concatenated string
+        ref_text = ""      # we don't know where the split is
+        target_text = full_text
+
+    if ref_text and target_text:
+        full_text = ref_text + target_text
+    elif not full_text:
+        return {"error": "Provide either (reference_text + target_text) or text"}
+
+    # --- Options ---
+    char_points_idx     = inp.get("char_points_idx")
+    sampling_timesteps  = int(inp.get("sampling_timesteps", 20))
+    cfg_scale           = float(inp.get("cfg_scale", 1.0))
+    temperature         = float(inp.get("temperature", 0.1))
+    greedy              = bool(inp.get("greedy", True))
+    output_image        = bool(inp.get("output_image", True))
+
+    # --- Decode reference strokes ---
+    if not ref_strokes_b64:
+        return {"error": "No reference_strokes / style_strokes provided"}
     try:
-        raw = base64.b64decode(strokes_b64)
-        strokes = np.frombuffer(raw, dtype=np.float32).reshape(-1, 5)
+        raw = base64.b64decode(ref_strokes_b64)
+        ref_strokes = np.frombuffer(raw, dtype=np.float32).reshape(-1, 5)
     except Exception as e:
-        return {"error": f"Failed to decode style_strokes: {e}"}
+        return {"error": f"Failed to decode reference_strokes: {e}"}
 
-    # --- Derive character boundaries ---
+    # --- Character boundaries ---
     if char_points_idx is None:
-        char_points_idx = _derive_char_points_idx(strokes)
+        char_points_idx = _derive_char_points_idx(ref_strokes)
     if len(char_points_idx) == 0:
-        return {
-            "error": (
-                "No character boundaries found in style_strokes. "
-                "Ensure pen-state column 4 contains end-of-character markers "
-                "(is_next=0, is_new_stroke=0, is_new_char=1), or supply char_points_idx."
-            )
-        }
+        return {"error": "No character boundaries found in reference strokes"}
+
+    # --- Vocabulary check ---
+    bad_chars = _check_vocab(full_text)
+    if bad_chars:
+        return {"error": f"Characters not in vocabulary ({len(bad_chars)}): {''.join(bad_chars[:20])}"}
 
     # --- Text indices ---
     try:
-        text_indices = _text_to_indices(text)
+        text_indices = _text_to_indices(full_text)
     except ValueError as e:
         return {"error": str(e)}
 
-    # --- Auto prefix_ratio ---
-    # text should contain: style_text (matching style strokes) + target_text
-    # e.g. style_strokes contains "2006年上海证券...", text="2006年上海证券...溯川科技"
-    # prefix_ratio = num_style_chars / num_total_chars
-    # The model preserves the first prefix_ratio portion and generates the rest
-    # IMPORTANT: style_text must be the COMPLETE text represented by style_strokes,
-    # not just a few characters. Check char_points_idx for the exact count.
-    if prefix_ratio is None:
-        num_style_chars = len(char_points_idx)
-        num_text_chars = len(text_indices) - 1  # exclude trailing marker
-        if num_text_chars > 0:
-            prefix_ratio = min(num_style_chars / num_text_chars, 0.95)
-        else:
-            prefix_ratio = 0.3
-        print(f"Auto prefix_ratio: {prefix_ratio:.3f} ({num_style_chars} style chars / {num_text_chars} text chars)")
-    else:
-        prefix_ratio = float(prefix_ratio)
-        print(f"Manual prefix_ratio: {prefix_ratio:.3f}")
+    # --- prefix_ratio ---
+    num_ref_chars  = len(char_points_idx)
+    num_text_chars = len(text_indices) - 1   # exclude trailing marker
+
+    # If we have ref_text, verify it matches
+    if ref_text:
+        if len(ref_text) != num_ref_chars:
+            print(f"[warn] reference_text length ({len(ref_text)}) != "
+                  f"char_points_idx count ({num_ref_chars}), using char_points_idx")
+
+    prefix_ratio = min(num_ref_chars / num_text_chars, 0.95) if num_text_chars > 0 else 0.3
+    print(f"prefix_ratio={prefix_ratio:.3f}  ref_chars={num_ref_chars}  "
+          f"total_chars={num_text_chars}  target_chars={num_text_chars - num_ref_chars}")
 
     # --- Build tensors ---
-    strokes_padded, seq_len = _pad_to_multiple_of_8(strokes)
-    T = strokes_padded.shape[0]
+    ref_padded, ref_len = _pad_to_multiple_of_8(ref_strokes)
+    T = ref_padded.shape[0]
 
-    data = torch.tensor(strokes_padded, dtype=torch.float32).unsqueeze(0).to(DEVICE)   # [1, T, 5]
+    data = torch.tensor(ref_padded, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
     pad_val = np.array([0, 0, 0, 0, 1], dtype=np.float32)
-    is_pad  = np.all(strokes_padded == pad_val, axis=1)
-    mask    = torch.tensor(~is_pad, dtype=torch.bool).unsqueeze(0).to(DEVICE)           # [1, T]
+    is_pad  = np.all(ref_padded == pad_val, axis=1)
+    mask    = torch.tensor(~is_pad, dtype=torch.bool).unsqueeze(0).to(DEVICE)
 
-    text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)  # [1, L]
+    text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)
 
     # --- Inference ---
     with torch.no_grad():
-        feat = VAE_MODEL.encode(data.permute(0, 2, 1))[0].permute(0, 2, 1)  # [1, T_lat, D]
+        feat = VAE_MODEL.encode(data.permute(0, 2, 1))[0].permute(0, 2, 1)
 
         latent_mask, latent_padding_mask, _ = build_prefix_mask_from_char_points(
             char_points_idx=[char_points_idx],
@@ -298,51 +287,48 @@ def handler(event: dict) -> dict:
             compression_factor=8,
             prefix_ratio=prefix_ratio,
         )
-        final_noise_mask = latent_mask * latent_padding_mask  # [1, T_lat]
+        final_noise_mask = latent_mask * latent_padding_mask
 
         x_pred = DIFFUSION.ddim_sample(
-            dit_model=DIT_MODEL,
-            n=1,
-            cond=feat,
+            dit_model=DIT_MODEL, n=1, cond=feat,
             text=text_tensor,
             cond_mask=latent_mask,
             padding_mask=latent_padding_mask,
             sampling_timesteps=sampling_timesteps,
-            eta=0.0,
-            cfg_scale=cfg_scale,
+            eta=0.0, cfg_scale=cfg_scale,
         )
 
         x_mix = (
             x_pred.permute(0, 2, 1) * final_noise_mask.unsqueeze(1)
             + feat.permute(0, 2, 1) * (1 - final_noise_mask).unsqueeze(1)
-        )  # [1, D, T_lat]
+        )
 
-        gmm_out = VAE_MODEL.decode(x_mix)  # [1, 123, T_lat]
+        gmm_out = VAE_MODEL.decode(x_mix)
         pi, mu1, mu2, sigma1, sigma2, corr, pen, _ = get_mixture_coef(gmm_out, num_mixture=20)
 
-        params = [
-            pi[0].cpu(), mu1[0].cpu(), mu2[0].cpu(),
-            sigma1[0].cpu(), sigma2[0].cpu(), corr[0].cpu(),
-            pen[0].cpu(),
-        ]
-        recon = sample_from_params(params, temp=temperature, max_seq_len=seq_len, greedy=greedy)
+        params = [pi[0].cpu(), mu1[0].cpu(), mu2[0].cpu(),
+                  sigma1[0].cpu(), sigma2[0].cpu(), corr[0].cpu(), pen[0].cpu()]
+        recon = sample_from_params(params, temp=temperature, max_seq_len=ref_len, greedy=greedy)
 
-    # --- Encode output ---
+    # --- Output ---
     recon_f32 = recon.astype(np.float32)
     result = {
         "strokes":  base64.b64encode(recon_f32.tobytes()).decode("utf-8"),
-        "seq_len":  int(seq_len),
+        "seq_len":  int(ref_len),
         "shape":    list(recon_f32.shape),
+        "prefix_ratio": round(prefix_ratio, 4),
+        "ref_chars": num_ref_chars,
+        "target_chars": num_text_chars - num_ref_chars,
     }
 
     if output_image:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            tmp = f.name
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as _f:
+            tmp = _f.name
         try:
             plot_line_cv2(recon_f32, tmp, canvas_height=256, padding=20,
                           line_thickness=2, max_dist=200)
-            with open(tmp, "rb") as f:
-                result["image"] = base64.b64encode(f.read()).decode("utf-8")
+            with open(tmp, "rb") as _f:
+                result["image"] = base64.b64encode(_f.read()).decode("utf-8")
         finally:
             os.unlink(tmp)
 
