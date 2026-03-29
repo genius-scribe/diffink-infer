@@ -68,19 +68,22 @@ VOCAB_PATH = os.environ.get("VOCAB_PATH", _resolve("data/All_zi.json"))
 _R2_BASE = "https://pub-233b8b390a4b4668b0e5fd1f4cd5a2bf.r2.dev/diffink"
 
 _R2_FILES = [
-    (VOCAB_PATH, f"{_R2_BASE}/meta/All_zi.json"),                      # ~44 KB
-    (VAE_CKPT,   f"{_R2_BASE}/checkpoints/vae_epoch_100.pt"),           # ~171 MB
-    (DIT_CKPT,   f"{_R2_BASE}/checkpoints/dit_epoch_1-001.pt"),         # ~2.8 GB
+    (VOCAB_PATH, f"{_R2_BASE}/meta/All_zi.json", 44043),                      # ~44 KB
+    (VAE_CKPT,   f"{_R2_BASE}/checkpoints/vae_epoch_100.pt", 178524954),      # ~171 MB
+    (DIT_CKPT,   f"{_R2_BASE}/checkpoints/dit_epoch_1-001.pt", 2914621632),   # ~2.8 GB
 ]
 
-for _path, _url in _R2_FILES:
-    if not os.path.exists(_path):
+for _path, _url, _min_size in _R2_FILES:
+    _need_download = not os.path.exists(_path) or os.path.getsize(_path) < _min_size * 0.9
+    if _need_download:
         os.makedirs(os.path.dirname(_path), exist_ok=True)
         print(f"Downloading {_url} → {_path} ...")
         subprocess.run(
-            ["wget", "-q", "--show-progress", "-O", _path, _url],
+            ["wget", "--show-progress", "-O", _path, _url],
             check=True,
         )
+    else:
+        print(f"[skip] {_path} already exists ({os.path.getsize(_path)} bytes)")
 
 # ---------------------------------------------------------------------------
 # Load character vocabulary
