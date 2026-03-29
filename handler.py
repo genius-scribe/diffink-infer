@@ -28,7 +28,8 @@ import json
 import os
 import tempfile
 
-import gdown
+import subprocess
+
 import numpy as np
 import runpod
 import torch
@@ -50,18 +51,24 @@ VOCAB_PATH = os.environ.get("VOCAB_PATH", "data/All_zi.json")
 
 # ---------------------------------------------------------------------------
 # Download checkpoints if not present (runs once per worker lifetime)
+# Uses Cloudflare R2 public bucket (no rate limits, fast CDN)
 # ---------------------------------------------------------------------------
-_GDRIVE_FILES = [
-    (VOCAB_PATH, "1yQpL0oxC5dv8yXTdWuHsdkaZpAI4XYeQ"),   # ~44 KB
-    (VAE_CKPT,   "11fprScAKJnML2Dv_BFZ5JDSQ1cQm341t"),   # ~171 MB
-    (DIT_CKPT,   "13sApjo9rqFHdfNnWmiWaRjFVWewJqECY"),   # ~2.8 GB
+_R2_BASE = "https://pub-233b8b390a4b4668b0e5fd1f4cd5a2bf.r2.dev/diffink"
+
+_R2_FILES = [
+    (VOCAB_PATH, f"{_R2_BASE}/All_zi.json"),             # ~44 KB
+    (VAE_CKPT,   f"{_R2_BASE}/vae_epoch_100.pt"),         # ~171 MB
+    (DIT_CKPT,   f"{_R2_BASE}/dit_epoch_1.pt"),           # ~2.8 GB
 ]
 
-for _path, _fid in _GDRIVE_FILES:
+for _path, _url in _R2_FILES:
     if not os.path.exists(_path):
         os.makedirs(os.path.dirname(_path), exist_ok=True)
-        print(f"Downloading {_path} ...")
-        gdown.download(id=_fid, output=_path, quiet=False)
+        print(f"Downloading {_url} → {_path} ...")
+        subprocess.run(
+            ["wget", "-q", "--show-progress", "-O", _path, _url],
+            check=True,
+        )
 
 # ---------------------------------------------------------------------------
 # Load character vocabulary

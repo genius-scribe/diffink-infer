@@ -14,7 +14,7 @@ WORKDIR /app
 
 # ── Extra system libs for opencv ───────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
+        libgl1 libglib2.0-0 wget \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python dependencies (torch already provided by base image) ─────────────
@@ -26,8 +26,7 @@ RUN pip install --no-cache-dir \
     "x-transformers>=1.42" \
     pyyaml \
     tqdm \
-    "opencv-python-headless>=4.11" \
-    "gdown>=5.0"
+    "opencv-python-headless>=4.11"
 
 # ── Application source ─────────────────────────────────────────────────────
 COPY diffink/ ./diffink/
@@ -35,5 +34,5 @@ COPY handler.py ./
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────
 # Checkpoints (~3 GB total) are downloaded at worker startup by handler.py
-# via gdown if not already present on the container's disk.
+# from Cloudflare R2 public bucket if not already present on the container's disk.
 CMD ["python", "-u", "handler.py"]
