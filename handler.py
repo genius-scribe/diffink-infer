@@ -12,13 +12,15 @@ RunPod Serverless handler for DiffInk — online handwriting generation.
 
 ## How it works
 
-1. Trim reference strokes to the first N characters (style anchor)
-2. Use target_text as the generation text
-3. Model keeps 30% of the style anchor as prefix, generates the rest conditioned
-   on the style + text embedding
-
-The model was trained with prefix_ratio=0.3.  By trimming the reference to a
-short style sample, we keep the model in its comfort zone.
+1. Trim reference strokes to the first N characters (style anchor).
+2. Estimate average points per character from the style strokes.
+3. Pad the stroke sequence with zeros so the latent space is long enough
+   for ALL characters (style + target).  This is critical because the DiT
+   truncates text embeddings to the latent sequence length — without padding,
+   the model cannot see the target text at all.
+4. Set prefix_ratio = style_chars / total_chars so the mask keeps the style
+   region as conditioning and marks the padded target region for generation.
+5. DDIM generates the target region conditioned on the style prefix + full text.
 """
 
 import base64
@@ -205,8 +207,6 @@ def handler(event):
     style_char_idx = char_points_idx[:num_style_chars]
 
     # --- Text: style reference + target ---
-    # The model was trained with text matching the style strokes.
-    # We need the style text so the model knows what the prefix is "saying".
     style_text = reference_text[:num_style_chars]
     full_text = style_text + target_text
 
@@ -216,13 +216,34 @@ def handler(event):
 
     text_indices = _text_to_indices(full_text)
     num_target = len(target_text)
+    total_chars = len(full_text)
+
+    # --- Pad strokes to make room for target characters ---
+    # The DiT truncates text embeddings to the latent sequence length.
+    # Without enough latent positions, the model can't see target characters.
+    avg_pts_per_char = trim_end / num_style_chars
+    target_pts = int(avg_pts_per_char * num_target)
+    # Pad with zeros (pen-up state) for the target region
+    target_pad = np.zeros((target_pts, 5), dtype=np.float32)
+    extended_strokes = np.vstack([style_strokes, target_pad])
+
+    # Build char_points_idx for ALL characters (style + target)
+    all_char_idx = list(style_char_idx)
+    for i in range(num_target):
+        all_char_idx.append(trim_end + int(avg_pts_per_char * (i + 1)) - 1)
+
+    # prefix_ratio: style chars are the prefix (kept), target chars are suffix (generated)
+    prefix_ratio = num_style_chars / total_chars
 
     print(f"style: {num_style_chars} chars ({trim_end} pts), "
-          f"text: '{full_text}' ({len(full_text)} chars)")
+          f"target: {num_target} chars (~{target_pts} pts), "
+          f"text: '{full_text}' ({total_chars} chars), "
+          f"prefix_ratio: {prefix_ratio:.2f}")
 
     # --- Build tensors ---
-    padded, seq_len = _pad_to_multiple_of_8(style_strokes)
+    padded, orig_len = _pad_to_multiple_of_8(extended_strokes)
     T = padded.shape[0]
+    seq_len = orig_len  # actual sequence length before mod-8 padding
     data = torch.tensor(padded, dtype=torch.float32).unsqueeze(0).to(DEVICE)
     mask = torch.ones(1, T, dtype=torch.bool, device=DEVICE)
     text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)
@@ -232,10 +253,10 @@ def handler(event):
         feat = VAE_MODEL.encode(data.permute(0, 2, 1))[0].permute(0, 2, 1)
 
         latent_mask, latent_padding_mask, _ = build_prefix_mask_from_char_points(
-            char_points_idx=[style_char_idx],
+            char_points_idx=[all_char_idx],
             mask=mask,
             compression_factor=8,
-            prefix_ratio=0.3,
+            prefix_ratio=prefix_ratio,
         )
         final_noise_mask = latent_mask * latent_padding_mask
 
