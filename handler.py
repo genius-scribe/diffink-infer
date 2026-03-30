@@ -199,14 +199,24 @@ def handler(event):
     if len(char_points_idx) == 0:
         return {"error": "No character boundaries found in reference strokes"}
 
-    # --- Trim to first N characters as style anchor ---
-    if num_style_chars > len(char_points_idx):
-        num_style_chars = len(char_points_idx)
-    trim_end = char_points_idx[num_style_chars - 1]  # last point of Nth char
-    style_strokes = ref_strokes[:trim_end]
-    style_char_idx = char_points_idx[:num_style_chars]
+    # --- Validate style chars ---
+    ref_num_chars = len(char_points_idx)
+    if num_style_chars > ref_num_chars:
+        num_style_chars = ref_num_chars
 
-    # --- Text: style reference + target ---
+    # =====================================================================
+    # Strategy: mimic infer.py — use the FULL reference strokes for VAE
+    # encoding (so the encoder sees real spatial context), then let the
+    # diffusion model regenerate the suffix region with new target text.
+    #
+    # 1. Keep all reference strokes intact for encoding.
+    # 2. Compute prefix_ratio = num_style_chars / total_chars.
+    # 3. Build text = style_prefix_text + target_text.
+    # 4. If target has more chars than the reference suffix, extend the
+    #    sequence by repeating the last character's average stroke length
+    #    so the latent space has enough positions for the text embeddings.
+    # =====================================================================
+
     style_text = reference_text[:num_style_chars]
     full_text = style_text + target_text
 
@@ -217,33 +227,49 @@ def handler(event):
     text_indices = _text_to_indices(full_text)
     num_target = len(target_text)
     total_chars = len(full_text)
-
-    # --- Pad strokes to make room for target characters ---
-    # The DiT truncates text embeddings to the latent sequence length.
-    # Without enough latent positions, the model can't see target characters.
-    avg_pts_per_char = trim_end / num_style_chars
-    target_pts = int(avg_pts_per_char * num_target)
-    # Pad with zeros (pen-up state) for the target region
-    target_pad = np.zeros((target_pts, 5), dtype=np.float32)
-    extended_strokes = np.vstack([style_strokes, target_pad])
-
-    # Build char_points_idx for ALL characters (style + target)
-    all_char_idx = list(style_char_idx)
-    for i in range(num_target):
-        all_char_idx.append(trim_end + int(avg_pts_per_char * (i + 1)) - 1)
-
-    # prefix_ratio: style chars are the prefix (kept), target chars are suffix (generated)
     prefix_ratio = num_style_chars / total_chars
 
-    print(f"style: {num_style_chars} chars ({trim_end} pts), "
-          f"target: {num_target} chars (~{target_pts} pts), "
-          f"text: '{full_text}' ({total_chars} chars), "
+    # --- Compute average points-per-char from the full reference ---
+    total_ref_pts = ref_strokes.shape[0]
+    avg_pts_per_char = total_ref_pts / ref_num_chars
+
+    # How many stroke points do we need for the full sequence?
+    needed_pts = int(avg_pts_per_char * total_chars)
+
+    # Use the full reference strokes as the base.  If the reference is long
+    # enough we just use it directly (the suffix region will be regenerated
+    # anyway).  If more room is needed for target chars, extend with a copy
+    # of the reference strokes (tiled) so VAE sees realistic spatial data
+    # instead of zeros.
+    if needed_pts <= total_ref_pts:
+        work_strokes = ref_strokes[:needed_pts].copy()
+    else:
+        # Extend: tile the reference to fill the needed length
+        reps = (needed_pts // total_ref_pts) + 1
+        tiled = np.tile(ref_strokes, (reps, 1))[:needed_pts]
+        work_strokes = tiled.copy()
+
+    # Build char_points_idx for ALL characters (style + target)
+    # For the style prefix, keep the original boundaries.
+    # For target chars, space them evenly in the suffix region.
+    style_char_idx = char_points_idx[:num_style_chars]
+    prefix_end_pt = style_char_idx[-1] if num_style_chars > 0 else 0
+    all_char_idx = list(style_char_idx)
+    suffix_pts = needed_pts - prefix_end_pt
+    for i in range(num_target):
+        idx = prefix_end_pt + int(suffix_pts * (i + 1) / num_target) - 1
+        idx = min(idx, needed_pts - 1)
+        all_char_idx.append(idx)
+
+    print(f"[v2] style: {num_style_chars} chars, target: {num_target} chars, "
+          f"total: {total_chars} chars, text: '{full_text}', "
+          f"ref_pts: {total_ref_pts}, work_pts: {needed_pts}, "
           f"prefix_ratio: {prefix_ratio:.2f}")
 
     # --- Build tensors ---
-    padded, orig_len = _pad_to_multiple_of_8(extended_strokes)
+    padded, orig_len = _pad_to_multiple_of_8(work_strokes)
     T = padded.shape[0]
-    seq_len = orig_len  # actual sequence length before mod-8 padding
+    seq_len = orig_len
     data = torch.tensor(padded, dtype=torch.float32).unsqueeze(0).to(DEVICE)
     mask = torch.ones(1, T, dtype=torch.bool, device=DEVICE)
     text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)
@@ -296,7 +322,7 @@ def handler(event):
             tmp = f.name
         try:
             plot_line_cv2(recon_f32, tmp, canvas_height=256, padding=20,
-                          line_thickness=2, max_dist=5000)
+                          line_thickness=2, max_dist=200)
             with open(tmp, "rb") as f:
                 result["image"] = base64.b64encode(f.read()).decode("utf-8")
         finally:
