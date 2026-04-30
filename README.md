@@ -116,13 +116,13 @@ img.save("output.png")
 uv sync --extra local
 
 # Download checkpoints
-python download_checkpoints.py
+uv run python download_checkpoints.py
 
 # Generate a test payload from the validation set
-python make_test_input.py --h5 data/val.h5 --idx 0 --out test_input.json
+uv run python make_test_input.py --h5 data/val.h5 --idx 0 --out test_input.json
 
 # Run the handler locally
-python handler.py
+uv run python handler.py
 # In another terminal:
 # curl -s http://localhost:8000 -d @test_input.json | python -m json.tool
 ```
