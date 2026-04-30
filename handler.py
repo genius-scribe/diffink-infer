@@ -271,7 +271,8 @@ def handler(event):
     T = padded.shape[0]
     seq_len = orig_len
     data = torch.tensor(padded, dtype=torch.float32).unsqueeze(0).to(DEVICE)
-    mask = torch.ones(1, T, dtype=torch.bool, device=DEVICE)
+    mask = torch.zeros(1, T, dtype=torch.bool, device=DEVICE)
+    mask[0, :orig_len] = True   # paper ValDataset.collate_fn 一致: pad 位置标 False
     text_tensor = torch.tensor(text_indices, dtype=torch.long).unsqueeze(0).to(DEVICE)
 
     # --- Inference ---
