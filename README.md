@@ -145,3 +145,70 @@ Pretrained checkpoints (~3 GB total) are downloaded from Google Drive on first w
 
 - GPU with CUDA compute capability ≥ 7.0 (V100 or newer), ≥ 6 GB VRAM
 - PyTorch 2.4.x + CUDA 12.4
+
+## AutoDL Pro deployment
+
+In addition to RunPod Serverless, this code is deployed on AutoDL Pro instance `pro-7772d41fb379` ("diffink") for hands-on debugging. Project tree on the instance:
+
+```
+/root/suchuan/
+├── diffink-infer/        # this repo
+├── inksight-torch/       # InkSight stroke-recovery weights
+├── fontdiffuser-inference/
+└── 严寒_kvenjoy_严寒.{gfont,json}
+```
+
+Quick verification on the Pro instance (uses uv, no miniconda):
+
+```bash
+cd /root/suchuan/diffink-infer
+uv run python test_local.py \
+  --test_input test/test_input_short.json \
+  --output_dir /tmp/verify
+```
+
+Expected: ckpt loads + 10-step DDIM sampling completes in ~1 s on RTX 4080 SUPER / vGPU-32GB; outputs `diffink_output.{png,npy}`.
+
+> **First-time setup on a fresh Pro:** install uv (`curl -LsSf https://astral.sh/uv/install.sh | sh`), then `uv sync --extra local --python 3.12`. To download torch CUDA wheels faster from inside China, temporarily swap the index in `pyproject.toml` to the aliyun mirror:
+> ```bash
+> sed -i 's|https://download.pytorch.org/whl/cu124|https://mirrors.aliyun.com/pytorch-wheels/cu124|; /explicit = true/a format = "flat"' pyproject.toml
+> uv sync --extra local --python 3.12
+> # then revert pyproject.toml before committing
+> ```
+
+## Experiment archive
+
+This repo also serves as an archive of the experiments behind the bug-finding work. Documents and test data are preserved as evidence:
+
+- [`docs/DiffInk_VAE_泄漏问题.md`](docs/) — VAE boundary leakage analysis (the headline finding)
+- [`docs/DiffInk_数据格式与gfont转换说明.md`](docs/) — data format + gfont conversion notes (with reference plots)
+- [`docs/DiffInk_训练损失与联合训练说明.md`](docs/) — training loss + joint training notes
+- [`docs/DiffInk应用中出现的问题.pdf`](docs/) — bound PDF report
+- [`docs/试验总结.md`](docs/) — experiment summary (sections 1-6 of the report, narrative form)
+- [`test/README.md`](test/README.md) — test-data manifest (which input → which output, parameters, dates)
+
+Two reproducible inference runs are kept under `test/test_outputs_*/`:
+
+| Test | Reference | Target | Output |
+|------|-----------|--------|--------|
+| 8.3 sentence | `天地黄宇宙洪荒严寒永` (10 chars, gfont) | `春风又绿江南岸明月何时照我还` (14 chars) | `test/test_outputs_sentence_v3/` |
+| 8.2 InkSight | `人生得意须尽` (6 chars, InkSight-recovered) | `春夏秋冬东南西北上下` (10 random chars) | `test/test_outputs_inksight_6s10t/` |
+
+Both runs use the post-fix mask (see below).
+
+## Bug fixes & history
+
+### handler.py mask — fixed 2026-04-27
+
+Earlier handler used `mask = torch.ones(1, T)`, treating every position (including 8-multiple padding) as a real stroke. The paper's `ValDataset.collate_fn` uses `mask = ~(data == pad_val).all(dim=-1)` — only real positions are `True`. The all-ones mask let DiT attend to padding latents at the tail; the difference is small in practice (pad < 1 latent in tested cases) but structurally wrong.
+
+Current code matches the paper:
+
+```python
+mask = torch.zeros(1, T, dtype=torch.bool, device=DEVICE)
+mask[0, :orig_len] = True
+```
+
+> ⚠️ Commit `e269ba6 "fix: mask must be all-1s ..."` is a **misnamed regression** — its title is wrong and its change is reverted by the current code. Kept in history as evidence of the original mistake.
+
+The mask logic in independent experiment scripts (e.g. `test_val_h5.py`, removed during cleanup) always used the paper-consistent form, so historical experiment outputs under `test/test_outputs_*` (now archived locally only) are still valid analysis.

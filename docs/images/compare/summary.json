@@ -1,0 +1,50 @@
+[
+  {
+    "label": "paper",
+    "T_lat": 101,
+    "n_style": 22,
+    "n_target": 79,
+    "feat_style_mean": -0.14463363587856293,
+    "feat_style_std": 1.447909951210022,
+    "feat_target_mean": -0.07867704331874847,
+    "feat_target_std": 1.2122515439987183,
+    "xpred_style_mean": -0.116038978099823,
+    "xpred_style_std": 1.2486162185668945,
+    "xpred_target_mean": -0.06240501254796982,
+    "xpred_target_std": 1.1427028179168701,
+    "l2_style": 6.850768566131592,
+    "l2_target": 26.885225296020508
+  },
+  {
+    "label": "tile",
+    "T_lat": 101,
+    "n_style": 22,
+    "n_target": 79,
+    "feat_style_mean": -0.13788357377052307,
+    "feat_style_std": 1.3666722774505615,
+    "feat_target_mean": -0.14111308753490448,
+    "feat_target_std": 1.4387891292572021,
+    "xpred_style_mean": -0.12330695241689682,
+    "xpred_style_std": 1.2349883317947388,
+    "xpred_target_mean": -0.05812840536236763,
+    "xpred_target_std": 1.1907693147659302,
+    "l2_style": 6.390118598937988,
+    "l2_target": 36.48112869262695
+  },
+  {
+    "label": "hybrid",
+    "T_lat": 101,
+    "n_style": 22,
+    "n_target": 79,
+    "feat_style_mean": -0.14463363587856293,
+    "feat_style_std": 1.447909951210022,
+    "feat_target_mean": -0.14111308753490448,
+    "feat_target_std": 1.4387891292572021,
+    "xpred_style_mean": -0.11427108943462372,
+    "xpred_style_std": 1.2438969612121582,
+    "xpred_target_mean": -0.06523853540420532,
+    "xpred_target_std": 1.1682459115982056,
+    "l2_style": 6.83784294128418,
+    "l2_target": 36.387454986572266
+  }
+]
